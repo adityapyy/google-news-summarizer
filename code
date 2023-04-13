@@ -1,0 +1,84 @@
+import requests
+from bs4 import BeautifulSoup
+import csv
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from concurrent.futures import ThreadPoolExecutor
+import nltk
+from nltk.sentiment import SentimentIntensityAnalyzer
+import gensim.summarization
+
+# Ask for keyword to search
+keyword = input("Enter a keyword to search: ")
+
+# Send a GET request to Google
+url = "https://www.google.com/search?q={}".format(keyword)
+response = requests.get(url)
+
+# Parse the HTML content using Beautiful Soup
+soup = BeautifulSoup(response.content, "html.parser")
+
+# Get the top 5 article links from Google search results
+links = soup.select(".r a")
+top_links = []
+for link in links[:5]:
+    href = link.get("href")
+    if href.startswith("/url?q="):
+        top_links.append(href.replace("/url?q=", ""))
+
+# Scrape data from each article and store in CSV file
+def scrape_article(link):
+    try:
+        response = requests.get(link)
+        soup = BeautifulSoup(response.content, "html.parser")
+        title = soup.title.text
+        description = soup.select_one('meta[name="description"]')['content']
+        summary = gensim.summarization.summarize(description, ratio=0.1)
+        return [title, link, description, summary]
+    except:
+        return []
+
+with open("news_articles.csv", "w", newline="", encoding="utf-8") as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(["Title", "Link", "Description", "Summary"])
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = executor.map(scrape_article, top_links)
+        for result in results:
+            if result:
+                writer.writerow(result)
+
+# Load the data from CSV file into a Pandas DataFrame
+df = pd.read_csv("news_articles.csv")
+
+# Perform sentiment analysis on the article descriptions
+nltk.download('vader_lexicon')
+sia = SentimentIntensityAnalyzer()
+sentiments = []
+for desc in df["Description"]:
+    sentiment = sia.polarity_scores(desc)
+    if sentiment["compound"] > 0.05:
+        sentiments.append("positive")
+    elif sentiment["compound"] < -0.05:
+        sentiments.append("negative")
+    else:
+        sentiments.append("neutral")
+df["Sentiment"] = sentiments
+
+# Extract the most common words in the article descriptions
+desc_words = []
+for desc in df["Description"]:
+    desc_words.extend(desc.lower().split())
+    
+common_words = pd.Series(desc_words).value_counts().head(10)
+
+# Create a bar chart of the most common words
+sns.set_style("darkgrid")
+plt.figure(figsize=(12,6))
+plt.title("Most Common Words in Article Descriptions")
+plt.xticks(rotation=45)
+sns.barplot(x=common_words.index, y=common_words.values)
+plt.show()
+
+# Save the updated data to CSV file
+df.to_csv("news_articles.csv", index=False)
